@@ -1,0 +1,361 @@
+// Banco de dados para sistema de gestão de medicamentos
+// Conformidade LGPD e segurança do paciente
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums para tipagem forte
+enum UserRole {
+  PATIENT
+  PHYSICIAN
+  PHARMACIST
+  ADMIN
+}
+
+enum InteractionSeverity {
+  MINOR
+  MODERATE
+  MAJOR
+  CONTRAINDICATED
+}
+
+enum AdverseEventSeverity {
+  MILD
+  MODERATE
+  SEVERE
+  LIFE_THREATENING
+}
+
+enum EventType {
+  SIDE_EFFECT
+  ADVERSE_REACTION
+  ADVERSE_EVENT
+}
+
+enum AllergyType {
+  DRUG
+  FOOD
+  ENVIRONMENTAL
+}
+
+enum AllergySeverity {
+  MILD
+  MODERATE
+  SEVERE
+  ANAPHYLACTIC
+}
+
+enum DosageStatus {
+  SCHEDULED
+  TAKEN
+  MISSED
+  DELAYED
+  SKIPPED
+}
+
+enum EvidenceLevel {
+  A
+  B
+  C
+  D
+}
+
+// Usuários e autenticação
+model User {
+  id                String       @id @default(cuid())
+  email             String       @unique
+  passwordHash      String
+  role              UserRole     @default(PATIENT)
+  isActive          Boolean      @default(true)
+  mfaEnabled        Boolean      @default(false)
+  mfaSecret         String?
+  lastLoginAt       DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  dataRetentionUntil DateTime?   // LGPD compliance
+
+  // Relacionamentos
+  patient           Patient?
+  prescriptions     Prescription[]
+  auditLogs         AuditLog[]
+
+  @@map("users")
+}
+
+// Dados do paciente com criptografia
+model Patient {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  externalId       String    @unique  // ID pseudonimizado
+  encryptedPii     Bytes?               // PII criptografado (nome, CPF, etc.)
+  dateOfBirth      DateTime?
+  gender           String?
+  weight           Float?
+  height           Float?
+  
+  // Condições clínicas
+  chronicConditions Json?
+  renalFunction     String?
+  hepaticFunction   String?
+  
+  // Contatos de emergência (criptografado)
+  emergencyContact  Bytes?
+  
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relacionamentos
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prescriptions    Prescription[]
+  allergies        Allergy[]
+  adverseEvents    AdverseEvent[]
+  dosageTakings    DosageTaking[]
+
+  @@map("patients")
+}
+
+// Catálogo de medicamentos (dados públicos ANVISA)
+model Medication {
+  id                String               @id @default(cuid())
+  anvisaCode        String               @unique
+  commercialName    String
+  activeSubstance   Json                 // Princípios ativos
+  pharmaceuticalForm String
+  therapeuticClass  String
+  manufacturer      String
+  packageInfo       Json?
+  
+  // Informações clínicas
+  contraindications Json?
+  sideEffects       Json?
+  dosageGuidelines  Json?
+  
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  // Relacionamentos
+  prescriptions     Prescription[]
+  interactionsA     DrugInteraction[]    @relation("MedicationA")
+  interactionsB     DrugInteraction[]    @relation("MedicationB")
+  adverseEvents     AdverseEvent[]
+  allergies         Allergy[]
+
+  @@map("medications")
+}
+
+// Prescrições médicas
+model Prescription {
+  id                String         @id @default(cuid())
+  patientId         String
+  medicationId      String
+  userId            String         // Médico prescritor
+  
+  // Dosagem e administração
+  dosage            String
+  frequency         String
+  route             String         // Via de administração
+  instructions      String?
+  
+  // Período de tratamento
+  startDate         DateTime
+  endDate           DateTime?
+  isActive          Boolean        @default(true)
+  
+  // Informações clínicas
+  indication        String?
+  prescribedBy      String?        // Nome do médico
+  prescriptionDate  DateTime       @default(now())
+  
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  // Relacionamentos
+  patient           Patient        @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  medication        Medication     @relation(fields: [medicationId], references: [id])
+  prescriber        User           @relation(fields: [userId], references: [id])
+  dosageSchedules   DosageSchedule[]
+
+  @@map("prescriptions")
+}
+
+// Agendamento de doses
+model DosageSchedule {
+  id             String         @id @default(cuid())
+  prescriptionId String
+  scheduledTime  DateTime
+  dosage         String
+  instructions   String?
+  
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relacionamentos
+  prescription   Prescription   @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  takings        DosageTaking[]
+
+  @@map("dosage_schedules")
+}
+
+// Registro de tomadas
+model DosageTaking {
+  id               String         @id @default(cuid())
+  patientId        String
+  scheduleId       String
+  scheduledTime    DateTime
+  actualTime       DateTime?
+  status           DosageStatus
+  notes            String?
+  delayReason      String?
+  
+  // Sintomas/observações pós-dose
+  symptoms         Json?
+  
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relacionamentos
+  patient          Patient        @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  schedule         DosageSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@map("dosage_takings")
+}
+
+// Alergias e sensibilidades
+model Allergy {
+  id                String          @id @default(cuid())
+  patientId         String
+  medicationId      String?         // Se alergia a medicamento
+  allergen          String          // Nome do alérgeno
+  allergyType       AllergyType
+  severity          AllergySeverity
+  
+  // Reação observada
+  reaction          String?
+  onsetDate         DateTime?
+  
+  // Evidências
+  clinicalEvidence  String?
+  laboratoryTests   Json?
+  
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  // Relacionamentos
+  patient           Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  medication        Medication?     @relation(fields: [medicationId], references: [id])
+
+  @@map("allergies")
+}
+
+// Interações medicamentosas
+model DrugInteraction {
+  id                   String              @id @default(cuid())
+  medicationAId        String
+  medicationBId        String
+  severity             InteractionSeverity
+  
+  // Descrição clínica
+  mechanism            String
+  clinicalEffect       String
+  recommendation       String
+  evidenceLevel        EvidenceLevel
+  
+  // Bibliografia
+  references           Json?
+  
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  // Relacionamentos
+  medicationA          Medication          @relation("MedicationA", fields: [medicationAId], references: [id])
+  medicationB          Medication          @relation("MedicationB", fields: [medicationBId], references: [id])
+
+  @@unique([medicationAId, medicationBId])
+  @@map("drug_interactions")
+}
+
+// Eventos adversos (VigiMed)
+model AdverseEvent {
+  id                  String               @id @default(cuid())
+  patientId           String
+  medicationId        String?
+  
+  // Classificação do evento
+  eventType           EventType
+  severity            AdverseEventSeverity
+  description         String
+  
+  // Timeline
+  onsetDate           DateTime
+  endDate             DateTime?
+  outcome             String?
+  
+  // Dados para VigiMed
+  reporterType        String?
+  vigimedReported     Boolean              @default(false)
+  vigimedCaseId       String?
+  vigimedReportedAt   DateTime?
+  
+  // Contexto clínico
+  concomitantMeds     Json?
+  medicalHistory      String?
+  
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  // Relacionamentos
+  patient             Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  medication          Medication?          @relation(fields: [medicationId], references: [id])
+
+  @@map("adverse_events")
+}
+
+// Auditoria para LGPD
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  entityType  String
+  entityId    String
+  action      String
+  actorId     String
+  changes     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  // Relacionamentos
+  actor       User     @relation(fields: [actorId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// Configurações do sistema
+model SystemConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("system_config")
+}
+
+// Notificações
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  type        String
+  title       String
+  message     String
+  data        Json?
+  read        Boolean   @default(false)
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@map("notifications")
+}
