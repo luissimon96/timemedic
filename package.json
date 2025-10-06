@@ -17,9 +17,15 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
-    "db:seed": "ts-node prisma/seed.ts"
+    "db:seed": "ts-node prisma/seed.ts",
+    "db:reset": "prisma migrate reset",
+    "supabase:deploy": "node scripts/supabase-deploy.bat",
+    "supabase:setup": "prisma migrate deploy && node -e \"console.log('Run prisma/supabase-setup.sql in Supabase SQL Editor')\"",
+    "supabase:test": "ts-node scripts/test-supabase-integration.ts",
+    "db:test": "prisma db execute --file-path prisma/test-connection.sql"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -84,7 +90,7 @@
     "ts-jest": "^29.1.0",
     "ts-loader": "^9.4.3",
     "ts-node": "^10.9.1",
-    "tsconfig-paths": "^4.2.1",
+    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.1.3"
   },
   "jest": {

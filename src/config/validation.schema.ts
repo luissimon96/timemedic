@@ -3,6 +3,12 @@ import * as Joi from 'joi';
 export const validationSchema = Joi.object({
   // Configurações do banco de dados
   DATABASE_URL: Joi.string().required(),
+  DIRECT_URL: Joi.string().optional(), // Para Supabase migrations
+
+  // Supabase Configuration
+  SUPABASE_URL: Joi.string().uri().optional(),
+  SUPABASE_ANON_KEY: Joi.string().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: Joi.string().optional(),
 
   // Segurança JWT
   JWT_SECRET: Joi.string().min(32).required(),
@@ -79,4 +85,9 @@ export const validationSchema = Joi.object({
   VAPID_PUBLIC_KEY: Joi.string().required(),
   VAPID_PRIVATE_KEY: Joi.string().required(),
   VAPID_SUBJECT: Joi.string().email().required(),
+
+  // Database connection optimization
+  DB_CONNECTION_LIMIT: Joi.number().default(20),
+  DB_POOL_TIMEOUT: Joi.number().default(10000),
+  DB_STATEMENT_TIMEOUT: Joi.number().default(30000),
 });

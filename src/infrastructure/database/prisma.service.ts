@@ -31,6 +31,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
           level: 'warn',
         },
       ],
+      // Supabase-optimized configuration
+      engine: {
+        // Connection pooling configuration
+        connectionLimit: configService.get<number>('DB_CONNECTION_LIMIT', 20),
+        poolTimeout: configService.get<number>('DB_POOL_TIMEOUT', 10000),
+        statementTimeout: configService.get<number>('DB_STATEMENT_TIMEOUT', 30000),
+        // Retry configuration for Supabase connection pooling
+        connectTimeout: 10000,
+        acquireTimeout: 10000,
+        idleTimeout: 60000,
+        maxLifetime: 300000,
+      },
     });
 
     // Log de queries em desenvolvimento
@@ -148,6 +160,151 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     } catch (error) {
       this.logger.error('Failed to get connection stats', error);
       return [];
+    }
+  }
+
+  /**
+   * Verifica se está conectado ao Supabase
+   */
+  async isSupabaseConnection(): Promise<boolean> {
+    try {
+      const result = await this.$queryRaw<Array<{ version: string }>>`
+        SELECT version() as version
+      `;
+      
+      return result[0]?.version?.includes('PostgreSQL') || false;
+    } catch (error) {
+      this.logger.error('Failed to check Supabase connection', error);
+      return false;
+    }
+  }
+
+  /**
+   * Obtém informações detalhadas do Supabase
+   */
+  async getSupabaseInfo() {
+    try {
+      const [
+        version,
+        connectionCount,
+        databaseSize,
+        tableCount
+      ] = await Promise.all([
+        this.$queryRaw<Array<{ version: string }>>`SELECT version() as version`,
+        this.$queryRaw<Array<{ count: number }>>`
+          SELECT count(*) as count FROM pg_stat_activity 
+          WHERE datname = current_database()
+        `,
+        this.$queryRaw<Array<{ size: string }>>`
+          SELECT pg_size_pretty(pg_database_size(current_database())) as size
+        `,
+        this.$queryRaw<Array<{ count: number }>>`
+          SELECT count(*) as count 
+          FROM information_schema.tables 
+          WHERE table_schema = 'public'
+        `
+      ]);
+
+      return {
+        version: version[0]?.version || 'Unknown',
+        activeConnections: connectionCount[0]?.count || 0,
+        databaseSize: databaseSize[0]?.size || 'Unknown',
+        tableCount: tableCount[0]?.count || 0,
+        isSupabase: await this.isSupabaseConnection(),
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      this.logger.error('Failed to get Supabase info', error);
+      return {
+        version: 'Error',
+        activeConnections: 0,
+        databaseSize: 'Error',
+        tableCount: 0,
+        isSupabase: false,
+        timestamp: new Date().toISOString(),
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Executa uma query de health check específica para Supabase
+   */
+  async supabaseHealthCheck() {
+    try {
+      const result = await this.$queryRaw<Array<{ 
+        status: string; 
+        timestamp: Date; 
+        database: string;
+        tables_count: number;
+        total_users: number;
+        total_patients: number;
+        active_prescriptions: number;
+      }>>`
+        SELECT 
+          'healthy' as status,
+          CURRENT_TIMESTAMP as timestamp,
+          'postgresql' as database,
+          (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public') as tables_count,
+          (SELECT count(*) FROM "users") as total_users,
+          (SELECT count(*) FROM "patients") as total_patients,
+          (SELECT count(*) FROM "prescriptions" WHERE "isActive" = true) as active_prescriptions
+      `;
+
+      return result[0] || { status: 'unhealthy' };
+    } catch (error) {
+      this.logger.error('Supabase health check failed', error);
+      return {
+        status: 'unhealthy',
+        timestamp: new Date(),
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Testa conectividade específica para Supabase com retry
+   */
+  async testSupabaseConnectivity(maxRetries = 3): Promise<{
+    success: boolean;
+    latency: number;
+    retries: number;
+    error?: string;
+  }> {
+    let retries = 0;
+    
+    while (retries < maxRetries) {
+      const start = Date.now();
+      
+      try {
+        await this.$queryRaw`SELECT 1 as test, CURRENT_TIMESTAMP as timestamp`;
+        const latency = Date.now() - start;
+        
+        return {
+          success: true,
+          latency,
+          retries,
+        };
+      } catch (error) {
+        retries++;
+        this.logger.warn(
+          `Supabase connectivity test failed (attempt ${retries}/${maxRetries}): ${error.message}`
+        );
+        
+        if (retries === maxRetries) {
+          return {
+            success: false,
+            latency: Date.now() - start,
+            retries,
+            error: error.message,
+          };
+        }
+        
+        // Exponential backoff
+        await new Promise(resolve => 
+          setTimeout(resolve, Math.pow(2, retries) * 1000)
+        );
+      }
     }
   }
 }
